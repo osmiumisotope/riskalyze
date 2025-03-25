@@ -187,9 +187,32 @@ def validate_portfolio(portfolio_df, returns_data):
     
     return errors
 
+def calculate_beta(asset_returns, market_returns):
+    """
+    Calculate the beta of an asset relative to the market using proper data alignment
+    and consistent statistical methods.
+    
+    Beta = Covariance(asset, market) / Variance(market)
+    """
+    # Ensure data is aligned and drop any missing values
+    combined = pd.DataFrame({'asset': asset_returns, 'market': market_returns})
+    combined = combined.dropna()
+    
+    if len(combined) == 0:
+        return np.nan
+    
+    # Extract aligned series
+    asset = combined['asset']
+    market = combined['market']
+    
+    # Calculate beta using aligned data with consistent degrees of freedom
+    covariance = asset.cov(market)
+    variance = market.var()
+    
+    return covariance / variance
+
 # Sidebar navigation with only two options now
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Portfolio Analysis", "Help"])
+st.sidebar.title("Portfolio Input")
 
 # Load historical returns data
 returns_data = load_monthly_returns()
@@ -197,337 +220,418 @@ returns_data = load_monthly_returns()
 if returns_data is None:
     st.stop()
 
-if page == "Portfolio Analysis":
-    # Section 1: Portfolio Input
-    st.header("1. Portfolio Input")
-    
-    input_method = st.radio("Choose input method", ["Upload File", "Generate Random Portfolio"])
-    
-    if input_method == "Upload File":
-        # Download template button
-        template_df = generate_portfolio_template()
-        buffer = io.BytesIO()
-        template_df.to_csv(buffer, index=False)
-        st.download_button(
-            label="Download Template CSV",
-            data=buffer.getvalue(),
-            file_name="portfolio_template.csv",
-            mime="text/csv"
-        )
-        
-        # File upload
-        uploaded_file = st.file_uploader("Upload your portfolio CSV or Excel file", type=['csv', 'xlsx'])
-        if uploaded_file is not None:
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    portfolio_df = pd.read_csv(uploaded_file)
-                else:
-                    portfolio_df = pd.read_excel(uploaded_file)
-                
-                # Validate portfolio
-                errors = validate_portfolio(portfolio_df, returns_data)
-                if errors:
-                    for error in errors:
-                        st.error(error)
-                else:
-                    st.session_state['portfolio'] = portfolio_df
-                    st.success("Portfolio uploaded successfully!")
-                    
-            except Exception as e:
-                st.error(f"Error reading file: {str(e)}")
-    
-    else:  # Generate Random Portfolio
-        if st.button("Generate Random Portfolio"):
-            # Select random tickers
-            num_assets = np.random.randint(5, 11)
-            selected_tickers = np.random.choice(returns_data.columns, num_assets, replace=False)
-            
-            # Generate random weights and normalize
-            weights = np.random.random(num_assets)
-            weights = weights / weights.sum()
-            
-            # Create portfolio DataFrame
-            portfolio_df = pd.DataFrame({
-                'Ticker': selected_tickers,
-                'Weight': weights
-            })
-            
-            st.session_state['portfolio'] = portfolio_df
-            st.success("Random portfolio generated!")
+# Section 1: Portfolio Input (moved to sidebar)
+input_method = st.sidebar.radio("Choose input method", ["Generate Random Portfolio", "Upload File", "Enter Manually"])
 
-    # Display current portfolio and Risk Analysis if portfolio exists
-    if 'portfolio' in st.session_state:
-        # Combine Portfolio and Risk Analysis sections
-        st.header("2. Portfolio Analysis")
+if input_method == "Generate Random Portfolio":
+    if st.sidebar.button("Generate Random Portfolio"):
+        # Select random tickers - ensure at least 10 stocks
+        num_assets = np.random.randint(10, 16)  # Between 10 and 15 assets
+        selected_tickers = np.random.choice(returns_data.columns, num_assets, replace=False)
         
-        col1, col2 = st.columns([2, 1])
+        # Generate random weights and normalize
+        weights = np.random.random(num_assets)
+        weights = weights / weights.sum()
         
-        with col1:
-            st.subheader("Current Portfolio Weights")
-            st.dataframe(st.session_state['portfolio'])
-            
-            # Display portfolio composition pie chart
-            fig = px.pie(st.session_state['portfolio'], values='Weight', names='Ticker', title='Portfolio Composition')
-            st.plotly_chart(fig)
+        # Create portfolio DataFrame
+        portfolio_df = pd.DataFrame({
+            'Ticker': selected_tickers,
+            'Weight': weights
+        })
         
-        # Add lookback period selector
-        lookback_years = st.selectbox("Select Analysis Period", [1, 3, 5], index=0)
-        
-        # Calculate and display portfolio value over time
+        st.session_state['portfolio'] = portfolio_df
+        st.sidebar.success("Random portfolio generated!")
+
+elif input_method == "Upload File":
+    # Download template button
+    template_df = generate_portfolio_template()
+    buffer = io.BytesIO()
+    template_df.to_csv(buffer, index=False)
+    st.sidebar.download_button(
+        label="Download Template CSV",
+        data=buffer.getvalue(),
+        file_name="portfolio_template.csv",
+        mime="text/csv"
+    )
+    
+    # File upload
+    uploaded_file = st.sidebar.file_uploader("Upload your portfolio CSV or Excel file", type=['csv', 'xlsx'])
+    if uploaded_file is not None:
         try:
-            metrics = calculate_portfolio_metrics(st.session_state['portfolio'], returns_data, lookback_years)
-            
-            # Display portfolio value chart
-            st.subheader(f"Portfolio Value (Past {lookback_years} Year{'s' if lookback_years > 1 else ''})")
-            
-            # Check if SPY exists in the data for comparison
-            if 'SPY' in returns_data.columns:
-                # Get SPY returns for the same period
-                spy_returns = returns_data['SPY'].iloc[-len(metrics['Portfolio Value']):]
-                
-                # Calculate SPY value (also starting at 100)
-                spy_value = 100 * (1 + spy_returns).cumprod()
-                
-                # Create DataFrame with both portfolio and SPY values
-                comparison_df = pd.DataFrame({
-                    'Portfolio': metrics['Portfolio Value'].values,
-                    'SPY': spy_value.values
-                }, index=metrics['Portfolio Value'].index)
-                
-                # Plot both lines
-                fig = px.line(
-                    comparison_df,
-                    labels={"value": "Value", "variable": ""},
-                    title=f"Portfolio vs. SPY (Starting at 100)"
-                )
-                st.plotly_chart(fig)
+            if uploaded_file.name.endswith('.csv'):
+                portfolio_df = pd.read_csv(uploaded_file)
             else:
-                # Plot only portfolio if SPY is not available
-                fig = px.line(
-                    x=metrics['Portfolio Value'].index,
-                    y=metrics['Portfolio Value'].values,
-                    labels={"x": "Date", "y": "Value"},
-                    title=f"Portfolio Value (Starting at 100)"
-                )
-                st.plotly_chart(fig)
+                portfolio_df = pd.read_excel(uploaded_file)
             
-            # Display backtracked weights
-            st.subheader(f"Backtracked Weights ({lookback_years} Year{'s' if lookback_years > 1 else ''} Ago)")
-            st.dataframe(metrics['Backtracked Weights'])
-            
-            # Display risk metrics
-            st.subheader("Risk Metrics")
-            
-            col1, col2, col3 = st.columns(3)
+            # Validate portfolio
+            errors = validate_portfolio(portfolio_df, returns_data)
+            if errors:
+                for error in errors:
+                    st.sidebar.error(error)
+            else:
+                st.session_state['portfolio'] = portfolio_df
+                st.sidebar.success("Portfolio uploaded successfully!")
+                
+        except Exception as e:
+            st.sidebar.error(f"Error reading file: {str(e)}")
+
+else:  # Enter Manually
+    st.sidebar.subheader("Enter Portfolio Manually")
+    
+    # Initialize session state for manual portfolio if not exists
+    if 'manual_portfolio_rows' not in st.session_state:
+        st.session_state['manual_portfolio_rows'] = 3  # Start with 3 rows
+        
+    # Function to add a row
+    def add_row():
+        st.session_state['manual_portfolio_rows'] += 1
+    
+    # Button to add more rows
+    st.sidebar.button("Add Row", on_click=add_row)
+    
+    # Get available tickers from returns data
+    available_tickers = returns_data.columns.tolist()
+    
+    # Create lists to store ticker and weight inputs
+    tickers = []
+    weights = []
+    
+    # Create form for manual entry
+    with st.sidebar.form("manual_portfolio_form"):
+        st.write("Enter tickers and weights (in %):")
+        
+        # Create rows for ticker and weight inputs
+        for i in range(st.session_state['manual_portfolio_rows']):
+            col1, col2 = st.columns([2, 1])
             
             with col1:
-                st.metric(f"Annual Return ({lookback_years}Y)", f"{metrics['Annual Return']:.2%}")
-                st.metric("Sharpe Ratio", f"{metrics['Sharpe Ratio']:.2f}")
+                # Searchable ticker input with dropdown
+                ticker = st.selectbox(
+                    f"Ticker {i+1}",
+                    options=available_tickers,
+                    key=f"ticker_{i}"
+                )
+                tickers.append(ticker)
             
             with col2:
-                st.metric("Annual Volatility (Current)", f"{metrics['Annual Volatility']:.2%}")
-                st.metric("VaR (95%)", f"{metrics['VaR (95%)']:.2%}")
-            
-            with col3:
-                st.metric("Max Drawdown", f"{metrics['Max Drawdown']:.2%}")
-                st.metric("VaR (99%)", f"{metrics['VaR (99%)']:.2%}")
-            
-            # Correlation heatmap
-            st.subheader("Correlation Matrix")
-            portfolio_returns = returns_data[st.session_state['portfolio']['Ticker']]
-            correlation_method = st.selectbox("Correlation Method", ["pearson", "spearman"])
-            correlation_matrix = portfolio_returns.corr(method=correlation_method)
-            
-            fig = go.Figure(data=go.Heatmap(
-                z=correlation_matrix,
-                x=correlation_matrix.index,
-                y=correlation_matrix.columns,
-                colorscale='RdBu',
-                zmin=-1,
-                zmax=1
-            ))
-            fig.update_layout(title=f"{correlation_method.capitalize()} Correlation Matrix")
-            st.plotly_chart(fig)
-            
-        except Exception as e:
-            st.error(f"Error calculating portfolio metrics: {str(e)}")
+                # Weight input (as percentage)
+                weight = st.number_input(
+                    f"Weight {i+1} (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=0.0,
+                    step=0.1,
+                    key=f"weight_{i}"
+                )
+                weights.append(weight / 100.0)  # Convert percentage to decimal
         
-        # Section 3: Scenario Testing
-        st.header("3. Scenario Testing")
+        # Check total and build portfolio on submit
+        submit_button = st.form_submit_button("Create Portfolio")
         
-        # Market drop simulation
-        st.subheader("Market Drop Simulation")
-        market_drop = st.slider("Market Drop Percentage", -50, -5, -20, 5)
-        
-        # Calculate portfolio beta relative to SPY
-        if 'SPY' in returns_data.columns:
-            market_returns = returns_data['SPY']
+        if submit_button:
+            # Filter out empty entries (where weight is 0)
+            portfolio_data = [(t, w) for t, w in zip(tickers, weights) if w > 0]
             
-            betas = {}
-            for ticker in st.session_state['portfolio']['Ticker']:
-                covariance = np.cov(returns_data[ticker], market_returns)[0, 1]
-                market_variance = np.var(market_returns)
-                betas[ticker] = covariance / market_variance
-            
-            # Calculate expected portfolio impact
-            impact = sum(
-                st.session_state['portfolio'].set_index('Ticker')['Weight'] * 
-                pd.Series(betas) * 
-                market_drop / 100
-            )
-            
-            st.metric("Expected Portfolio Impact", f"{impact:.2%}")
-            
-            # Display beta table
-            beta_df = pd.DataFrame(list(betas.items()), columns=['Ticker', 'Beta'])
-            # Merge with weights
-            beta_df = beta_df.merge(st.session_state['portfolio'], on='Ticker')
-            beta_df['Contribution to Impact'] = beta_df['Beta'] * beta_df['Weight'] * market_drop / 100
-            
-            st.subheader("Asset Betas and Impact")
-            st.dataframe(beta_df)
-        else:
-            st.warning("Market index (SPY) data not available for beta calculation")
-        
-        # Historical event replay
-        st.subheader("Historical Event Replay")
-        events = {
-            "COVID-19 Crash (Jan-Jun 2020)": ("01/01/2020", "06/30/2020"),
-            "2022 Bear Market (Jan-Oct 2022)": ("01/01/2022", "10/31/2022"),
-        }
-        
-        selected_event = st.selectbox("Select Historical Event", list(events.keys()))
-        
-        # Check if we have data for the selected event
-        try:
-            start_date_str, end_date_str = events[selected_event]
-            start_date = datetime.strptime(start_date_str, "%m/%d/%Y")
-            end_date = datetime.strptime(end_date_str, "%m/%d/%Y")
-            
-            # For impact calculation, we use specific periods defined in PRD
-            impact_periods = {
-                "COVID-19 Crash (Jan-Jun 2020)": ("02/01/2020", "04/30/2020"),  # Original period for impact calculation
-                "2022 Bear Market (Jan-Oct 2022)": ("01/01/2022", "10/31/2022"),
-            }
-            
-            impact_start, impact_end = impact_periods[selected_event]
-            impact_start_date = datetime.strptime(impact_start, "%m/%d/%Y")
-            impact_end_date = datetime.strptime(impact_end, "%m/%d/%Y")
-            
-            # Check if we have SPY or VOO for market returns
-            market_ticker = None
-            if 'SPY' in returns_data.columns:
-                market_ticker = 'SPY'
-            elif 'VOO' in returns_data.columns:
-                market_ticker = 'VOO'
-            
-            if market_ticker is None:
-                st.warning("Market index (SPY or VOO) data not available for historical analysis")
+            if not portfolio_data:
+                st.error("Please add at least one position with weight greater than 0.")
             else:
-                # Get market returns for the display period (could be different from impact period)
-                market_data = returns_data[[market_ticker]]
+                # Extract tickers and weights
+                filtered_tickers, filtered_weights = zip(*portfolio_data)
                 
-                # Convert index to datetime if it's not already
-                if not isinstance(market_data.index, pd.DatetimeIndex):
-                    market_data.index = pd.to_datetime(market_data.index)
+                # Check if weights sum to 1 (100%)
+                total_weight = sum(filtered_weights)
                 
-                # Filter data for display period
-                display_data = market_data[(market_data.index >= start_date) & 
-                                          (market_data.index <= end_date)]
-                
-                # Filter data for impact calculation period
-                impact_data = market_data[(market_data.index >= impact_start_date) & 
-                                         (market_data.index <= impact_end_date)]
-                
-                if len(display_data) == 0:
-                    st.warning(f"No historical data available for {selected_event}")
-                elif len(impact_data) == 0:
-                    st.warning(f"No impact calculation data available for {selected_event}")
+                if not 0.99 <= total_weight <= 1.01:
+                    st.error(f"Total weight is {total_weight:.2%}, must be 100%.")
                 else:
-                    # Calculate market cumulative return for the impact period
-                    impact_cum_return = (1 + impact_data).cumprod() - 1
-                    market_event_return = impact_cum_return.iloc[-1, 0]  # Last value in the period
+                    # Create portfolio DataFrame
+                    portfolio_df = pd.DataFrame({
+                        'Ticker': filtered_tickers,
+                        'Weight': filtered_weights
+                    })
                     
-                    # Apply the market return to the portfolio using the betas for impact calculation
-                    portfolio_impact = sum(
-                        st.session_state['portfolio'].set_index('Ticker')['Weight'] * 
-                        pd.Series(betas) * 
-                        market_event_return
-                    )
+                    # Normalize weights to ensure they sum exactly to 1
+                    portfolio_df['Weight'] = portfolio_df['Weight'] / portfolio_df['Weight'].sum()
                     
-                    # Display metrics for the impact calculation period
-                    st.metric(f"Portfolio Impact during {selected_event} (Feb-Apr 2020 for COVID)", f"{portfolio_impact:.2%}")
-                    st.metric(f"{market_ticker} Return (Feb-Apr 2020 for COVID)", f"{market_event_return:.2%}")
-                    
-                    # Calculate display period cumulative returns for chart
-                    market_cum_return = (1 + display_data).cumprod() - 1
-                    
-                    # Calculate portfolio performance for the same period
-                    tickers = st.session_state['portfolio']['Ticker'].tolist()
-                    
-                    # Get all tickers' returns for the display period
-                    tickers_data = returns_data[tickers]
-                    if not isinstance(tickers_data.index, pd.DatetimeIndex):
-                        tickers_data.index = pd.to_datetime(tickers_data.index)
-                    
-                    display_tickers_data = tickers_data[(tickers_data.index >= start_date) & 
-                                                       (tickers_data.index <= end_date)]
-                    
-                    # Calculate weighted returns for the portfolio
-                    weighted_returns = display_tickers_data.mul(
-                        st.session_state['portfolio'].set_index('Ticker')['Weight'], 
-                        axis=1
-                    )
-                    portfolio_returns = weighted_returns.sum(axis=1)
-                    
-                    # Calculate portfolio cumulative return
-                    portfolio_cum_return = (1 + portfolio_returns).cumprod() - 1
-                    
-                    # Create DataFrame with both market and portfolio performance
-                    comparison_df = pd.DataFrame({
-                        'Portfolio': portfolio_cum_return.values,
-                        market_ticker: market_cum_return.values.flatten()
-                    }, index=market_cum_return.index)
-                    
-                    # Display a line chart with both lines
-                    st.subheader(f"Performance during {selected_event}")
-                    st.line_chart(comparison_df)
-                    
-        except (KeyError, ValueError) as e:
-            st.warning(f"Error analyzing event data: {str(e)}")
+                    # Validate tickers exist in returns data
+                    missing_tickers = [ticker for ticker in portfolio_df['Ticker'] if ticker not in returns_data.columns]
+                    if missing_tickers:
+                        st.error(f"Missing tickers in historical data: {', '.join(missing_tickers)}")
+                    else:
+                        st.session_state['portfolio'] = portfolio_df
+                        st.success("Portfolio created successfully!")
 
-elif page == "Help":
-    st.header("Help & Documentation")
+# Add Help section to sidebar
+with st.sidebar.expander("Help & Documentation"):
+    st.write("""
+    **Metric Definitions**
+    - Annual Return: The yearly return of the portfolio
+    - Annual Volatility: Standard deviation of returns
+    - Sharpe Ratio: Risk-adjusted return measure
+    - Max Drawdown: Maximum observed loss
+    - VaR: Minimum expected loss at a confidence level
     
-    st.subheader("Metric Definitions")
-    st.markdown("""
-    - **Annual Return**: The yearly return of the portfolio over the selected lookback period
-    - **Annual Volatility**: The standard deviation of returns based on current weights, annualized
-    - **Sharpe Ratio**: Risk-adjusted return measure (assuming 2% risk-free rate)
-    - **Max Drawdown**: The maximum observed loss from a peak to a trough over the selected period
-    - **Value at Risk (VaR)**: The minimum expected loss at a given confidence level
+    **Usage Instructions**
+    1. Upload portfolio or generate random one
+    2. Review the portfolio analysis
+    3. Use scenario testing to simulate events
     """)
+
+# Main content area - Portfolio Analysis
+if 'portfolio' in st.session_state:
+    st.header("Portfolio Analysis")
     
-    st.subheader("Usage Instructions")
-    st.markdown("""
-    1. Start by uploading your portfolio or generating a random one
-    2. Review the portfolio analysis with your choice of lookback period (1, 3, or 5 years)
-    3. Use the scenario testing to simulate market events
-    4. Adjust parameters using the provided controls
-    """)
+    col1, col2 = st.columns([2, 1])
     
-    st.subheader("How Returns Are Calculated")
-    st.markdown("""
-    The application uses a backtracking approach to calculate historical portfolio performance:
+    with col1:
+        st.subheader("Current Portfolio Weights")
+        st.dataframe(st.session_state['portfolio'])
+        
+        # Display portfolio composition pie chart
+        # Sort the portfolio by weight in descending order
+        sorted_portfolio = st.session_state['portfolio'].sort_values(by='Weight', ascending=False)
+        fig = px.pie(sorted_portfolio, values='Weight', names='Ticker', title='Portfolio Composition')
+        # Modify the figure to ensure clockwise direction
+        fig.update_traces(rotation=0, direction='clockwise')
+        st.plotly_chart(fig)
     
-    1. **Backtracked Weights**: Current weights are adjusted backward in time based on historical returns
-    2. **Portfolio Value**: Starting from the backtracked weights, we calculate how the portfolio would have performed
-    3. **Annual Return**: Calculated from the total return over the selected period
-    4. **Annual Volatility**: Based on the current portfolio weights applied to recent returns
-    """)
+    # Add lookback period selector
+    lookback_years = st.selectbox("Select Analysis Period", [1, 3, 5], index=0)
     
-    st.subheader("Data Sources")
-    st.markdown("""
-    The application uses monthly returns data from the provided monthly_returns.csv file.
-    Make sure this file is present and contains the required historical data.
-    """) 
+    # Calculate and display portfolio value over time
+    try:
+        metrics = calculate_portfolio_metrics(st.session_state['portfolio'], returns_data, lookback_years)
+        
+        # Display portfolio value chart
+        st.subheader(f"Portfolio Value (Past {lookback_years} Year{'s' if lookback_years > 1 else ''})")
+        
+        # Check if SPY exists in the data for comparison
+        if 'SPY' in returns_data.columns:
+            # Get SPY returns for the same period
+            spy_returns = returns_data['SPY'].iloc[-len(metrics['Portfolio Value']):]
+            
+            # Calculate SPY value (also starting at 100)
+            spy_value = 100 * (1 + spy_returns).cumprod()
+            
+            # Create DataFrame with both portfolio and SPY values
+            comparison_df = pd.DataFrame({
+                'Portfolio': metrics['Portfolio Value'].values,
+                'SPY': spy_value.values
+            }, index=metrics['Portfolio Value'].index)
+            
+            # Plot both lines
+            fig = px.line(
+                comparison_df,
+                labels={"value": "Value", "variable": ""},
+                title=f"Portfolio vs. SPY (Starting at 100)"
+            )
+            st.plotly_chart(fig)
+        else:
+            # Plot only portfolio if SPY is not available
+            fig = px.line(
+                x=metrics['Portfolio Value'].index,
+                y=metrics['Portfolio Value'].values,
+                labels={"x": "Date", "y": "Value"},
+                title=f"Portfolio Value (Starting at 100)"
+            )
+            st.plotly_chart(fig)
+        
+        # Display backtracked weights
+        st.subheader(f"Backtracked Weights ({lookback_years} Year{'s' if lookback_years > 1 else ''} Ago)")
+        st.dataframe(metrics['Backtracked Weights'])
+        
+        # Display risk metrics
+        st.subheader("Risk Metrics")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(f"Annual Return ({lookback_years}Y)", f"{metrics['Annual Return']:.2%}")
+            st.metric("Sharpe Ratio", f"{metrics['Sharpe Ratio']:.2f}")
+        
+        with col2:
+            st.metric("Annual Volatility (Current)", f"{metrics['Annual Volatility']:.2%}")
+            st.metric("VaR (95%)", f"{metrics['VaR (95%)']:.2%}")
+        
+        with col3:
+            st.metric("Max Drawdown", f"{metrics['Max Drawdown']:.2%}")
+            st.metric("VaR (99%)", f"{metrics['VaR (99%)']:.2%}")
+        
+        # Correlation heatmap
+        st.subheader("Correlation Matrix")
+        portfolio_returns = returns_data[st.session_state['portfolio']['Ticker']]
+        correlation_method = st.selectbox("Correlation Method", ["pearson", "spearman"])
+        correlation_matrix = portfolio_returns.corr(method=correlation_method)
+        
+        fig = go.Figure(data=go.Heatmap(
+            z=correlation_matrix,
+            x=correlation_matrix.index,
+            y=correlation_matrix.columns,
+            colorscale='RdBu',
+            zmin=-1,
+            zmax=1
+        ))
+        fig.update_layout(title=f"{correlation_method.capitalize()} Correlation Matrix")
+        st.plotly_chart(fig)
+        
+    except Exception as e:
+        st.error(f"Error calculating portfolio metrics: {str(e)}")
+    
+    # Section 3: Scenario Testing
+    st.header("Scenario Testing")
+    
+    # Market drop simulation
+    st.subheader("Market Drop Simulation")
+    market_drop = st.slider("Market Drop Percentage", -50, -5, -20, 5)
+    
+    # Calculate portfolio beta relative to SPY
+    if 'SPY' in returns_data.columns:
+        market_returns = returns_data['SPY']
+        
+        betas = {}
+        for ticker in st.session_state['portfolio']['Ticker']:
+            # Use the improved beta calculation function
+            betas[ticker] = calculate_beta(returns_data[ticker], market_returns)
+        
+        # Calculate expected portfolio impact
+        impact = sum(
+            st.session_state['portfolio'].set_index('Ticker')['Weight'] * 
+            pd.Series(betas) * 
+            market_drop / 100
+        )
+        
+        st.metric("Expected Portfolio Impact", f"{impact:.2%}")
+        
+        # Display beta table
+        beta_df = pd.DataFrame(list(betas.items()), columns=['Ticker', 'Beta'])
+        # Merge with weights
+        beta_df = beta_df.merge(st.session_state['portfolio'], on='Ticker')
+        beta_df['Contribution to Impact'] = beta_df['Beta'] * beta_df['Weight'] * market_drop / 100
+        
+        st.subheader("Asset Betas and Impact")
+        st.dataframe(beta_df)
+    else:
+        st.warning("Market index (SPY) data not available for beta calculation")
+    
+    # Historical event replay
+    st.subheader("Historical Event Replay")
+    events = {
+        "COVID-19 Crash (Jan-Apr 2020)": ("01/01/2020", "04/30/2020"),
+        "2022 Bear Market (Jan-Oct 2022)": ("01/01/2022", "10/31/2022"),
+    }
+    
+    selected_event = st.selectbox("Select Historical Event", list(events.keys()))
+
+    # Load daily returns for historical events
+    @st.cache_data
+    def load_daily_returns():
+        try:
+            return pd.read_csv("daily_returns.csv", index_col=0, parse_dates=True)
+        except FileNotFoundError:
+            st.error("daily_returns.csv not found. Please ensure the file exists in the application directory.")
+            return None
+
+    daily_returns_data = load_daily_returns()
+    
+    if daily_returns_data is None:
+        st.stop()
+    
+    # Check if we have data for the selected event
+    try:
+        start_date_str, end_date_str = events[selected_event]
+        start_date = datetime.strptime(start_date_str, "%m/%d/%Y")
+        end_date = datetime.strptime(end_date_str, "%m/%d/%Y")
+        
+        # Check if we have SPY or VOO for market returns
+        market_ticker = None
+        if 'SPY' in daily_returns_data.columns:
+            market_ticker = 'SPY'
+        elif 'VOO' in daily_returns_data.columns:
+            market_ticker = 'VOO'
+        
+        if market_ticker is None:
+            st.warning("Market index (SPY or VOO) data not available for historical analysis")
+        else:
+            # Get market returns for the period
+            market_data = daily_returns_data[[market_ticker]]
+            
+            # Convert index to datetime if it's not already
+            if not isinstance(market_data.index, pd.DatetimeIndex):
+                market_data.index = pd.to_datetime(market_data.index)
+            
+            # Filter data for the period
+            period_data = market_data[(market_data.index >= start_date) & 
+                                    (market_data.index <= end_date)]
+            
+            if len(period_data) == 0:
+                st.warning(f"No historical data available for {selected_event}")
+            else:
+                # Calculate portfolio performance for the period
+                tickers = st.session_state['portfolio']['Ticker'].tolist()
+                
+                # Get all tickers' returns for the period
+                tickers_data = daily_returns_data[tickers]
+                if not isinstance(tickers_data.index, pd.DatetimeIndex):
+                    tickers_data.index = pd.to_datetime(tickers_data.index)
+                
+                period_tickers_data = tickers_data[(tickers_data.index >= start_date) & 
+                                                  (tickers_data.index <= end_date)]
+                
+                # Calculate weighted returns for the portfolio
+                weighted_returns = period_tickers_data.mul(
+                    st.session_state['portfolio'].set_index('Ticker')['Weight'], 
+                    axis=1
+                )
+                portfolio_returns = weighted_returns.sum(axis=1)
+                
+                # Calculate cumulative returns
+                portfolio_cum_return = (1 + portfolio_returns).cumprod()
+                market_cum_return = (1 + period_data[market_ticker]).cumprod()
+                
+                # Calculate maximum drawdown for both portfolio and market
+                portfolio_peak = portfolio_cum_return.expanding(min_periods=1).max()
+                portfolio_drawdown = (portfolio_cum_return - portfolio_peak) / portfolio_peak
+                portfolio_max_drawdown = portfolio_drawdown.min()
+                
+                market_peak = market_cum_return.expanding(min_periods=1).max()
+                market_drawdown = (market_cum_return - market_peak) / market_peak
+                market_max_drawdown = market_drawdown.min()
+                
+                # Display metrics
+                st.metric(f"Portfolio Maximum Drawdown", f"{portfolio_max_drawdown:.2%}")
+                st.metric(f"{market_ticker} Maximum Drawdown", f"{market_max_drawdown:.2%}")
+                
+                # Create DataFrame with both market and portfolio performance
+                comparison_df = pd.DataFrame({
+                    'Portfolio': portfolio_cum_return.values,
+                    market_ticker: market_cum_return.values
+                }, index=period_data.index)
+                
+                # Display a line chart with both lines
+                st.subheader(f"Performance during {selected_event}")
+                fig = px.line(
+                    comparison_df,
+                    labels={"value": "Cumulative Return", "variable": ""},
+                    title=f"Portfolio vs. {market_ticker}"
+                )
+                st.plotly_chart(fig)
+                
+                # Display drawdown chart
+                drawdown_df = pd.DataFrame({
+                    'Portfolio Drawdown': portfolio_drawdown.values,
+                    f'{market_ticker} Drawdown': market_drawdown.values
+                }, index=period_data.index)
+                
+                fig_drawdown = px.line(
+                    drawdown_df,
+                    labels={"value": "Drawdown", "variable": ""},
+                    title="Drawdown Analysis"
+                )
+                fig_drawdown.update_layout(yaxis_tickformat='.0%')
+                st.plotly_chart(fig_drawdown)
+                
+    except (KeyError, ValueError) as e:
+        st.warning(f"Error analyzing event data: {str(e)}")
+else:
+    st.header("Welcome to Portfolio Risk Analyzer")
+    st.info("Please input your portfolio using the options in the sidebar to begin analysis.") 

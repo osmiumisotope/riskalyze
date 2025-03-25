@@ -72,12 +72,12 @@ def main():
 
     # Define the date range: 10 years from today.
     end_date = datetime.today().date()
-    start_date = (datetime.today() - relativedelta(years=10)).date()
+    start_date = (datetime.today() - relativedelta(years=6)).date()
 
     print(f"Downloading monthly data for {len(tickers)} tickers from {start_date} to {end_date}...")
 
     # Batch download data.
-    data = download_monthly_data(tickers, start_date, end_date, interval='1mo')
+    data = download_monthly_data(tickers, start_date, end_date, interval='1d')
 
     # Extract adjusted close prices.
     prices = extract_adjusted_close(data, tickers)
@@ -86,8 +86,8 @@ def main():
     monthly_returns = compute_monthly_returns(prices)
 
     # Save the data to CSV files.
-    prices.to_csv("monthly_prices.csv")
-    monthly_returns.to_csv("monthly_returns.csv")
+    prices.to_csv("daily_prices.csv")
+    monthly_returns.to_csv("daily_returns.csv")
 
     print("Download and processing complete.")
     print("Data saved as 'monthly_prices.csv' and 'monthly_returns.csv'.")
