@@ -455,7 +455,7 @@ if 'portfolio' in st.session_state:
         
         with col3:
             st.metric("Max Drawdown", f"{metrics['Max Drawdown']:.2%}")
-            st.metric("VaR (99%)", f"{metrics['VaR (99%)']:.2%}")
+            #st.metric("VaR (99%)", f"{metrics['VaR (99%)']:.2%}")
         
         # Correlation heatmap
         st.subheader("Correlation Matrix")
