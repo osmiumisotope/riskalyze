@@ -167,9 +167,71 @@ def calculate_max_drawdown(returns):
     return drawdown.min()
 
 def calculate_historical_var(returns, confidence_level=0.95):
-    sorted_returns = np.sort(returns)
-    index = int(len(sorted_returns) * (1 - confidence_level))
-    return sorted_returns[index]
+    """
+    Calculate historical Value at Risk (VaR).
+    For 95% VaR, we take the 5th percentile (1 - 0.95).
+    VaR is returned as a positive number, indicating a loss threshold.
+    """
+    # e.g. For 95% VaR, var_cutoff = 5
+    var_cutoff = 100 * (1 - confidence_level)
+    
+    # 5th percentile of returns (a negative value for worst-case returns)
+    percentile_value = np.percentile(returns, var_cutoff)
+    
+    # Convert negative return to a positive loss
+    # e.g., if percentile_value = -0.06, VaR is +0.06
+    return -percentile_value
+
+def run_monte_carlo_simulation(portfolio_df, returns_data, num_simulations=1000,
+                                time_horizon_months=12, initial_investment=100000):
+    """
+    Run Monte Carlo simulation for portfolio risk assessment.
+    Uses Cholesky decomposition to generate correlated random returns.
+    """
+    tickers = portfolio_df['Ticker'].tolist()
+    weights = portfolio_df.set_index('Ticker')['Weight']
+
+    # Calculate historical statistics
+    ticker_returns = returns_data[tickers].dropna()
+    mean_returns = ticker_returns.mean()
+    cov_matrix = ticker_returns.cov()
+
+    # Cholesky decomposition for correlated random samples
+    cholesky = np.linalg.cholesky(cov_matrix)
+
+    # Run simulations
+    portfolio_end_values = np.zeros(num_simulations)
+    portfolio_paths = np.zeros((num_simulations, time_horizon_months + 1))
+    portfolio_paths[:, 0] = initial_investment
+
+    for sim in range(num_simulations):
+        for month in range(time_horizon_months):
+            z = np.random.standard_normal(len(tickers))
+            correlated_returns = mean_returns.values + cholesky @ z
+            portfolio_return = np.dot(weights.values, correlated_returns)
+            portfolio_paths[sim, month + 1] = portfolio_paths[sim, month] * (1 + portfolio_return)
+        portfolio_end_values[sim] = portfolio_paths[sim, -1]
+
+    # Calculate risk metrics from simulation
+    returns_distribution = (portfolio_end_values - initial_investment) / initial_investment
+    var_95 = np.percentile(returns_distribution, 5)
+    var_99 = np.percentile(returns_distribution, 1)
+    cvar_95 = returns_distribution[returns_distribution <= var_95].mean()
+    prob_loss = np.mean(returns_distribution < 0)
+    median_return = np.median(returns_distribution)
+    mean_return = np.mean(returns_distribution)
+
+    return {
+        'paths': portfolio_paths,
+        'end_values': portfolio_end_values,
+        'var_95': var_95,
+        'var_99': var_99,
+        'cvar_95': cvar_95,
+        'prob_loss': prob_loss,
+        'median_return': median_return,
+        'mean_return': mean_return,
+        'initial_investment': initial_investment,
+    }
 
 def validate_portfolio(portfolio_df, returns_data):
     """Validate portfolio data"""
@@ -375,6 +437,12 @@ with st.sidebar.expander("Help & Documentation"):
     1. Upload portfolio or generate random one
     2. Review the portfolio analysis
     3. Use scenario testing to simulate events
+             
+    **Assumptions**
+    1. There are only a limited number of stocks in the dataset.
+    2. VaR values are based on historical data and are affected by the analysis period.
+    3. Beta values are based on historical data and are affected by the analysis period.
+    4. The tool takes current portfolio weights and backcasts them to a previous point in time.
     """)
 
 # Main content area - Portfolio Analysis
@@ -455,7 +523,6 @@ if 'portfolio' in st.session_state:
         
         with col3:
             st.metric("Max Drawdown", f"{metrics['Max Drawdown']:.2%}")
-            st.metric("VaR (99%)", f"{metrics['VaR (99%)']:.2%}")
         
         # Correlation heatmap
         st.subheader("Correlation Matrix")
@@ -632,6 +699,94 @@ if 'portfolio' in st.session_state:
                 
     except (KeyError, ValueError) as e:
         st.warning(f"Error analyzing event data: {str(e)}")
+
+    # Monte Carlo Simulation Section
+    st.header("Monte Carlo Simulation")
+    st.markdown("Simulate thousands of possible future outcomes for your portfolio based on historical return distributions.")
+
+    mc_col1, mc_col2, mc_col3 = st.columns(3)
+    with mc_col1:
+        num_simulations = st.selectbox("Number of Simulations", [500, 1000, 5000, 10000], index=1)
+    with mc_col2:
+        time_horizon = st.selectbox("Time Horizon (Months)", [3, 6, 12, 24, 36], index=2)
+    with mc_col3:
+        initial_investment = st.number_input("Initial Investment ($)",
+                                              min_value=1000, max_value=10000000,
+                                              value=100000, step=10000)
+
+    if st.button("Run Simulation"):
+        with st.spinner(f"Running {num_simulations} simulations..."):
+            mc_results = run_monte_carlo_simulation(
+                st.session_state['portfolio'], returns_data,
+                num_simulations=num_simulations,
+                time_horizon_months=time_horizon,
+                initial_investment=initial_investment
+            )
+
+        # Display metrics
+        st.subheader("Simulation Results")
+        r_col1, r_col2, r_col3, r_col4 = st.columns(4)
+        with r_col1:
+            st.metric("VaR (95%)", f"{mc_results['var_95']:.2%}")
+            st.caption(f"${mc_results['var_95'] * initial_investment:,.0f}")
+        with r_col2:
+            st.metric("CVaR / Expected Shortfall (95%)", f"{mc_results['cvar_95']:.2%}")
+            st.caption(f"${mc_results['cvar_95'] * initial_investment:,.0f}")
+        with r_col3:
+            st.metric("Probability of Loss", f"{mc_results['prob_loss']:.1%}")
+        with r_col4:
+            st.metric("Median Return", f"{mc_results['median_return']:.2%}")
+
+        # Fan chart of simulated paths
+        st.subheader("Simulated Portfolio Paths")
+        paths = mc_results['paths']
+        months = np.arange(paths.shape[1])
+
+        p5 = np.percentile(paths, 5, axis=0)
+        p25 = np.percentile(paths, 25, axis=0)
+        p50 = np.percentile(paths, 50, axis=0)
+        p75 = np.percentile(paths, 75, axis=0)
+        p95 = np.percentile(paths, 95, axis=0)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=months, y=p95, mode='lines', line=dict(width=0),
+                                  showlegend=False))
+        fig.add_trace(go.Scatter(x=months, y=p5, mode='lines', line=dict(width=0),
+                                  fill='tonexty', fillcolor='rgba(68,114,196,0.15)',
+                                  name='5th-95th Percentile'))
+        fig.add_trace(go.Scatter(x=months, y=p75, mode='lines', line=dict(width=0),
+                                  showlegend=False))
+        fig.add_trace(go.Scatter(x=months, y=p25, mode='lines', line=dict(width=0),
+                                  fill='tonexty', fillcolor='rgba(68,114,196,0.3)',
+                                  name='25th-75th Percentile'))
+        fig.add_trace(go.Scatter(x=months, y=p50, mode='lines',
+                                  line=dict(color='rgb(68,114,196)', width=2),
+                                  name='Median'))
+        fig.add_hline(y=initial_investment, line_dash="dash", line_color="gray",
+                      annotation_text="Initial Investment")
+        fig.update_layout(
+            title=f"Monte Carlo Simulation ({num_simulations} paths, {time_horizon} months)",
+            xaxis_title="Month",
+            yaxis_title="Portfolio Value ($)",
+            yaxis_tickformat="$,.0f",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Distribution of final values
+        st.subheader("Distribution of Final Portfolio Values")
+        fig_hist = px.histogram(
+            x=mc_results['end_values'], nbins=50,
+            labels={'x': 'Portfolio Value ($)', 'y': 'Frequency'},
+            title="Distribution of Ending Portfolio Values"
+        )
+        fig_hist.add_vline(x=initial_investment, line_dash="dash", line_color="red",
+                           annotation_text="Initial Investment")
+        fig_hist.add_vline(x=np.median(mc_results['end_values']), line_dash="dash",
+                           line_color="green", annotation_text="Median")
+        st.plotly_chart(fig_hist, use_container_width=True)
 else:
     st.header("Welcome to Portfolio Risk Analyzer")
-    st.info("Please input your portfolio using the options in the sidebar to begin analysis.") 
+    st.info("Please input your portfolio using the options in the sidebar to begin analysis.")
+
+
